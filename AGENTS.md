@@ -1,6 +1,6 @@
 # AI Agent Guidelines for OWASP Juice Shop
 
-This document is the **primary authoritative source** of context for all AI assistants (Claude, GitHub Copilot, Codeium, Continue.dev, Junie, etc.) contributing to OWASP Juice Shop. It provides comprehensive guidelines to maintain code quality, security, and adherence to project standards.
+This document is the **primary authoritative source** of context for all AI assistants (GitHub Copilot, Codeium, Continue.dev, Junie, etc.) contributing to OWASP Juice Shop. It provides comprehensive guidelines to maintain code quality, security, and adherence to project standards.
 
 ## Project Overview
 
@@ -210,7 +210,7 @@ npm run rsn
 
 ## Verification of Agent Context
 
-To verify that an AI agent (like GitHub Copilot or Claude) is correctly using this context, you can use the following test prompts:
+To verify that an AI agent (like GitHub Copilot) is correctly using this context, you can use the following test prompts:
 
 1. **Check Primary Guidelines**: "What are the security constraints for developing new challenges in this project? Refer to the primary agent guidelines."
    - *Expected Result*: The agent should summarize constraints from the "Important Constraints" section of this file.
