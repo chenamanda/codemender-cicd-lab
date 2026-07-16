@@ -20,3 +20,4 @@ export function retrieveAppVersion () {
 // Manual trigger: running CodeMender CI/CD guardrail
 // Manual trigger: running CodeMender CI/CD guardrail
 // Manual trigger: running CodeMender CI/CD guardrail
+// Manual trigger: manual run of codemender security check
