@@ -34,9 +34,9 @@ permissions:
   id-token: write          # required for Google Cloud Workload Identity Federation (WIF)
 
 env:
-  # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
-  # contains the canonical CRITICAL finding (SQL injection in routes/login.ts).
-  SCAN_PATH: routes
+  # Scoped scan target. Scans just routes/login.ts (contains the canonical CRITICAL SQL injection)
+  # for ultra-fast CI/CD feedback (~1-2 min vs 15+ min for all routes).
+  SCAN_PATH: routes/login.ts
   # CodeMender CLI version hosted in Google Cloud Artifact Registry.
   # Note: Artifact Registry uses semantic versioning ('0.3.0', '0.4.0', or the alias 'stable').
   # (Docs: https://docs.cloud.google.com/gemini-enterprise-agent-platform/codemender/set-up-environment#download-cli)
@@ -45,8 +45,8 @@ env:
   GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID || '' }}
   CLOUDSDK_CORE_PROJECT: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID || '' }}
   # How many of the top-ranked HIGH/CRITICAL findings to auto-remediate in one
-  # run (all land in a single PR). Set to 1 for a minimal single-fix lab.
-  CM_FIX_LIMIT: "3"
+  # run (all land in a single PR). Set to 1 for single-file lab.
+  CM_FIX_LIMIT: "1"
 
 jobs:
   codemender-security:
@@ -142,20 +142,25 @@ jobs:
         run: |
           set -uo pipefail
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
+          TARGET_DIR=$( [ -d "$SCAN_PATH" ] && echo "$SCAN_PATH" || dirname "$SCAN_PATH" )
           for FID in ${{ steps.triage.outputs.fix_ids }}; do
             echo "::group::cm fix $FID"
-            cm fix "$FID" --auto-apply -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            cm fix "$FID" -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
             # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
             # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
             # Extract the printed diff and apply it ONLY if it applies cleanly — so
             # this is a no-op when cm already wrote the file itself.
             python3 .github/scripts/extract_cm_diff.py "$RUNNER_TEMP/fix-$FID.cm.log" > "$RUNNER_TEMP/fix-$FID.patch" || true
-            if [ -s "$RUNNER_TEMP/fix-$FID.patch" ] \
-               && git apply --check -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/fix-$FID.patch" 2>/dev/null; then
-              git apply -p1 --directory="$SCAN_PATH" "$RUNNER_TEMP/fix-$FID.patch"
-              echo "Applied extracted patch for $FID."
-            else
-              echo "No clean diff to apply for $FID (cm applied it directly, or it conflicts) — skipping."
+            if [ -s "$RUNNER_TEMP/fix-$FID.patch" ]; then
+              if git apply --check -p1 "$RUNNER_TEMP/fix-$FID.patch" 2>/dev/null; then
+                git apply -p1 "$RUNNER_TEMP/fix-$FID.patch"
+                echo "Applied extracted patch for $FID (root -p1)."
+              elif git apply --check -p1 --directory="$TARGET_DIR" "$RUNNER_TEMP/fix-$FID.patch" 2>/dev/null; then
+                git apply -p1 --directory="$TARGET_DIR" "$RUNNER_TEMP/fix-$FID.patch"
+                echo "Applied extracted patch for $FID (directory $TARGET_DIR -p1)."
+              else
+                echo "No clean diff to apply for $FID (cm applied it directly, or it conflicts) — skipping."
+              fi
             fi
             echo "::endgroup::"
           done
@@ -172,7 +177,8 @@ jobs:
           branch: codemender/auto-remediation
           delete-branch: true
           add-paths: |
-            ${{ env.SCAN_PATH }}/**
+            ${{ env.SCAN_PATH }}
+            routes/**
           commit-message: |
             fix(security): CodeMender autonomous remediation
 
