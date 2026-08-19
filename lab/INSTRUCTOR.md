@@ -14,8 +14,6 @@ instructions are in [`README.md`](./README.md).
 | `.github/scripts/extract_cm_diff.py` | Extracts cm's printed unified diff so CI can `git apply` it (cm doesn't always write the patch itself in a non-interactive shell) |
 | `lab/README.md` | Student lab guide |
 | `lab/INSTRUCTOR.md` | This file |
-| `lab/publish-cm-release.sh` | Helper: publish the `cm` binary as a Release asset on a repo |
-| Release `cm-cli-v0.1.0` | Holds `cm-linux` (runner) + `cm-mac` (local), downloaded in CI |
 
 The target app is **OWASP Juice Shop**, imported as a single clean commit. The
 16 upstream Juice Shop workflows were removed so the Actions tab shows **only**
@@ -23,57 +21,56 @@ the CodeMender guardrail.
 
 ---
 
-## 1. The one non-obvious dependency: distributing `cm`
+## 1. Binary Distribution: Google Cloud Artifact Registry
 
-The workflow installs `cm` with:
-
-```bash
-gh release download cm-cli-v0.1.0 --repo "$GITHUB_REPOSITORY" --pattern cm-linux
-```
-
-The built-in `GITHUB_TOKEN` can only read releases **on the same repo**. So
-**every student repo needs its own `cm-cli-v0.1.0` release** holding the
-`cm-linux` asset. GitHub does **not** copy releases when a repo is forked or
-created from a template — you must publish it per repo.
-
-Use the helper (run it once per student repo, pointing at your local `cm`
-binary):
+The workflow installs `cm` `0.3.0` directly from the official Google Cloud Artifact Registry generic package repository:
 
 ```bash
-# From a machine that has the cm binary:
-./lab/publish-cm-release.sh <owner>/<repo> /path/to/cm-linux
+curl -L -o "$RUNNER_TEMP/cm-linux-amd64.zip" \
+  "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3A0.3.0%3Acm-linux-amd64.zip:download?alt=media"
 ```
 
-**Distribution options:**
-
-| Approach | How | Trade-off |
-|---|---|---|
-| **Per-repo release** (default) | Run `publish-cm-release.sh` against each student repo | One-time loop; keeps the single-secret model |
-| **Central release + PAT** | Host `cm` on one repo; students add a read-only PAT secret and the workflow downloads cross-repo | Avoids per-repo publish, but adds a second secret |
-| **Vendored binary** | Commit `cm-linux` into each repo and skip the download step | Simplest CI, but bloats the repo with a 29 MB binary |
-
-For a class via **GitHub Classroom**, accept the assignment to generate the
-student repos, then loop `publish-cm-release.sh` over them.
+The binary is cached with **`actions/cache@v4`**, so subsequent CI runs restore it in under a second without re-downloading. **No manual per-repo binary publishing is required.**
 
 ---
 
-## 2. Per-repo setup checklist
+## 2. Setup Checklist (Workload Identity Federation)
 
-For **each** repo students will use (or the template before distribution):
+To enable GitHub Actions to communicate with CodeMender on Vertex AI:
 
-- [ ] Publish the `cm` release: `./lab/publish-cm-release.sh <owner>/<repo> <cm-linux>`
+### GCP Workload Identity Federation (WIF) Setup
+1. Create a Workload Identity Pool and OIDC Provider for GitHub Actions:
+   ```bash
+   gcloud iam workload-identity-pools create "github-pool" \
+     --project="YOUR_PROJECT_ID" --location="global"
+
+   gcloud iam workload-identity-pools providers create-oidc "github-provider" \
+     --project="YOUR_PROJECT_ID" --location="global" \
+     --workload-identity-pool="github-pool" \
+     --issuer-uri="https://token.actions.githubusercontent.com" \
+     --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository"
+   ```
+2. Create the Service Account and grant `roles/aiplatform.user`:
+   ```bash
+   gcloud iam service-accounts create codemender-github-ci --project="YOUR_PROJECT_ID"
+   gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+     --member="serviceAccount:codemender-github-ci@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+     --role="roles/aiplatform.user"
+   gcloud iam service-accounts add-iam-policy-binding "codemender-github-ci@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+     --project="YOUR_PROJECT_ID" --role="roles/iam.workloadIdentityUser" \
+     --member="principalSet://iam.googleapis.com/projects/YOUR_PROJECT_NUMBER/locations/global/workloadIdentityPools/github-pool/attribute.repository/YOUR_GITHUB_ORG_OR_USER/YOUR_REPO"
+   ```
+
+### GitHub Repository Settings
+For each student / repository:
+- [ ] **Settings → Secrets and variables → Actions → Variables:**
+      - `GCP_PROJECT_ID`
+      - `GCP_WORKLOAD_IDENTITY_PROVIDER`
+      - `GCP_SERVICE_ACCOUNT`
 - [ ] **Settings → Actions → General → Workflow permissions:**
       "Read and write permissions" **and**
       "Allow GitHub Actions to create and approve pull requests" — both ON.
-      (Required for the autonomous PR; without it `create-pull-request` errors.)
-- [ ] Students add the **`GOOGLE_API_KEY`** secret (they do this themselves).
-- [ ] (Optional) Branch protection on `main` so the red gate actually blocks
-      merges — makes the "deployment blocked" outcome tangible.
-
-> **Heads-up on shared quota:** until the GA per-user API key is enforced, all
-> runs authenticate with the binary's embedded key and share server-side quota.
-> For a large cohort, expect occasional `RESOURCE_EXHAUSTED`; have students
-> stagger runs or retry.
+- [ ] (Optional) Branch protection on `main` so the red gate blocks merges.
 
 ---
 

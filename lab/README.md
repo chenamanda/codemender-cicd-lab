@@ -42,12 +42,10 @@ This repository is your lab template. It already contains:
 
 - `.github/workflows/codemender-pipeline.yml` — the guardrail workflow.
 - `.github/scripts/cm_triage.py` — turns the JSON report into a gate decision.
-- A private **Release** (`cm-cli-v0.1.0`) holding the `cm` binary, which the
-  workflow downloads in CI.
+- `.github/scripts/extract_cm_diff.py` — extracts generated patches to apply in CI.
 
 > If you're an instructor setting this up for students, see
-> [`INSTRUCTOR.md`](./INSTRUCTOR.md) first — there's per-repo setup
-> (the `cm` release + a repo setting) that must be done before students start.
+> [`INSTRUCTOR.md`](./INSTRUCTOR.md) for class-wide GCP setup.
 
 ---
 
@@ -62,43 +60,43 @@ This repository is your lab template. It already contains:
        codemender-pipeline.yml
      scripts/
        cm_triage.py
+       extract_cm_diff.py
    ```
 
    That's the GitHub Actions structure GitHub auto-discovers — any `*.yml` under
    `.github/workflows/` becomes a pipeline.
 
-## Step 2 — Provision the secret
+## Step 2 — Configure repository variables and permissions
 
-CodeMender will (in its GA API form) authenticate with a **single API key**.
-Add it as a repository secret:
+CodeMender authenticates to Google Cloud via **Workload Identity Federation (WIF)**, eliminating static keys.
 
-1. Go to **Settings → Secrets and variables → Actions**.
-2. Click **New repository secret**.
-3. Name: **`GOOGLE_API_KEY`**  — Value: your Google API key.
-4. Save.
+### 1. Add Repository Variables
+1. Go to **Settings → Secrets and variables → Actions → Variables** tab.
+2. Add the following repository variables provided by your instructor or GCP project:
+   - **`GCP_PROJECT_ID`**: Your Google Cloud project ID (e.g. `achen-argolis-vertexai`).
+   - **`GCP_WORKLOAD_IDENTITY_PROVIDER`**: Full resource path to the WIF provider (e.g. `projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider`).
+   - **`GCP_SERVICE_ACCOUNT`**: The CI service account email (e.g. `codemender-github-ci@achen-argolis-vertexai.iam.gserviceaccount.com`).
 
-Then enable the pipeline's ability to open a remediation PR:
+### 2. Enable Pull Request Permissions
+Enable the pipeline's ability to open an autonomous remediation PR:
 
-5. Go to **Settings → Actions → General → Workflow permissions**.
-6. Select **Read and write permissions**, and check
+3. Go to **Settings → Actions → General → Workflow permissions**.
+4. Select **Read and write permissions**, and check
    **Allow GitHub Actions to create and approve pull requests**. Save.
 
-> **Note (honest detail):** the lab's `cm v0.1.0` binary authenticates with an
-> embedded build key, so the pipeline will run even if `GOOGLE_API_KEY` isn't
-> enforced yet. We wire the secret in now so the lab matches the GA model with
-> **zero changes later** — and so you practice secret provisioning, a core
-> DevSecOps skill.
+---
 
 ## Step 3 — Understand the guardrail
 
 Open `.github/workflows/codemender-pipeline.yml`. It runs on every push to
 `main` (and on manual dispatch). The steps map directly onto real `cm` commands:
 
-| Stage | Command | What it does |
+| Stage | Action / Command | What it does |
 |---|---|---|
-| **Install** | `gh release download cm-cli-v0.1.0` | Pulls the `cm` binary (private Release asset) using the built-in `GITHUB_TOKEN` |
-| **Init** | `cm init` | Mints the local CodeMender identity key |
-| **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan |
+| **Install** | `actions/cache` + `curl` (Artifact Registry) | Pulls `cm` `0.3.0` from Google Cloud Artifact Registry and caches it across runs |
+| **Auth** | `google-github-actions/auth` | Authenticates via Workload Identity Federation (WIF) with temporary ADC tokens |
+| **Init** | `cm init` | Mints the local CodeMender identity key and configures Git VCS |
+| **Scan** | `cm find routes -y` | Uploads `routes/` and runs the server-side scan via Vertex AI |
 | **Report** | `cm report -f json` | Exports findings → uploaded as the **`codemender-report`** artifact |
 | **Triage** | `cm_triage.py` | Counts HIGH/CRITICAL, ranks them, selects the top **N** (default 3) to fix |
 | **Patch** | `cm fix <id>` (looped over top-N) | Generates + applies a security patch for each selected finding |
@@ -183,18 +181,15 @@ code? What does that imply for using one as a *blocking* deployment gate?
 ## Troubleshooting
 
 - **"GitHub Actions is not permitted to create or approve pull requests"** →
-  you missed Step 2.5/2.6 (the workflow-permissions toggle).
-- **`gh release download` fails / `cm-linux` not found** → the `cm` release
-  isn't published on *your* repo. Ask your instructor (see `INSTRUCTOR.md`).
+  you missed Step 2.2 (the workflow-permissions toggle under Settings → Actions → General).
+- **"No valid Application Default Credentials found" or 403 / 401 on WIF** →
+  check that `GCP_PROJECT_ID`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, and `GCP_SERVICE_ACCOUNT` are correctly set in repo Variables/Secrets, and that the Service Account has `roles/aiplatform.user` on the GCP project.
 - **Run is green with 0 findings** → the scan didn't surface a HIGH/CRITICAL.
   Confirm `SCAN_PATH` is `routes` and that `routes/login.ts` still contains the
   string-built SQL query. (CodeMender runs server-side, so exact findings can
   vary run-to-run.)
-- **`RESOURCE_EXHAUSTED` / quota errors** → in this lab everyone shares the
-  binary's embedded key; stagger your runs or retry. (The GA per-user
-  `GOOGLE_API_KEY` removes this.)
 - **Scan takes a while** → `cm find` runs a multi-round server-side agent;
-  several minutes is normal. The job timeout is 45 minutes.
+  several minutes is normal. The job timeout is 60 minutes.
 
 ## Caveats to understand
 
