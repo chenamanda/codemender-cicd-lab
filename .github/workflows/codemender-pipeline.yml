@@ -9,10 +9,10 @@ name: CodeMender CI/CD Guardrail
 #     -> cm report -f json (artifact) -> triage -> cm fix (auto-patch)
 #     -> open remediation PR -> SECURITY GATE (fail red on HIGH/CRITICAL)
 #
-# Auth (see lab/README.md):
-#   * GOOGLE_API_KEY  — CodeMender API key provisioned as a repo secret.
-#     If not yet configured, the CLI falls back to its built-in preview key.
-#   * GITHUB_TOKEN    — built-in; used to open the remediation pull request.
+# Auth:
+#   * Google Cloud Workload Identity Federation (WIF) — authenticates via OIDC
+#     tokens, granting short-lived ADC credentials for Vertex AI.
+#   * GITHUB_TOKEN — built-in; used to open the remediation pull request.
 # ---------------------------------------------------------------------------
 
 on:
@@ -31,6 +31,7 @@ on:
 permissions:
   contents: write          # create the remediation branch / commit the patch
   pull-requests: write     # open the autonomous remediation PR
+  id-token: write          # required for Google Cloud Workload Identity Federation (WIF)
 
 env:
   # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
@@ -83,12 +84,22 @@ jobs:
           echo "$RUNNER_TEMP/cmbin" >> "$GITHUB_PATH"     # cm on PATH for later steps
           "$RUNNER_TEMP/cmbin/cm" --version || true
 
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Initialize CodeMender Workspace (cm init)
         run: |
           set -uo pipefail
           # Mints the local Tink identity keyset at ~/.codemender/identity.key.
           cm init -y 2>/dev/null || cm init 2>/dev/null || true
+          mkdir -p "$HOME/.codemender"
+          if [ -f "$HOME/.codemender/config.yaml" ]; then
+            sed -i 's/type: ""/type: "git"/' "$HOME/.codemender/config.yaml" 2>/dev/null || true
+          fi
           if [ -f "$HOME/.codemender/identity.key" ]; then
             echo "CodeMender identity initialized."
           else
@@ -97,8 +108,6 @@ jobs:
 
       - name: CodeMender Scan (cm find)
         id: scan
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -uo pipefail
           echo "Scanning '$SCAN_PATH' (source is uploaded to codemender.pa.googleapis.com)..."
@@ -130,8 +139,6 @@ jobs:
         id: fix
         # Open a remediation PR on push or manual run; PR events only scan+gate.
         if: ${{ github.event_name != 'pull_request' && steps.triage.outputs.fix_ids != '' }}
-        env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: |
           set -uo pipefail
           echo "Remediating top finding(s): ${{ steps.triage.outputs.fix_ids }}"
