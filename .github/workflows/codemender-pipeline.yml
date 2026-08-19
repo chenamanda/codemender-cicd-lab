@@ -5,18 +5,14 @@ name: CodeMender CI/CD Guardrail
 # CodeMender (the `cm` CLI), wired as a CI/CD deployment guardrail.
 #
 # Flow (one push to main demonstrates all four grading criteria):
-#   checkout -> install cm -> cm init -> cm find (scan, UPLOADS source)
+#   checkout -> cache/install cm -> cm init -> cm find (scan, UPLOADS source)
 #     -> cm report -f json (artifact) -> triage -> cm fix (auto-patch)
 #     -> open remediation PR -> SECURITY GATE (fail red on HIGH/CRITICAL)
 #
 # Auth (see lab/README.md):
-#   * GOOGLE_API_KEY  — the (forthcoming) CodeMender API key. Provisioned by
-#     students as a repo secret and passed to `cm` below. The current v0.1.0
-#     binary authenticates with an embedded build key, so the pipeline runs
-#     even before the GA API enforces this key — it is wired now so the lab
-#     matches the GA model with zero changes later.
-#   * GITHUB_TOKEN    — built-in; used to download the private `cm` release
-#     asset and to open the remediation pull request.
+#   * GOOGLE_API_KEY  — CodeMender API key provisioned as a repo secret.
+#     If not yet configured, the CLI falls back to its built-in preview key.
+#   * GITHUB_TOKEN    — built-in; used to open the remediation pull request.
 # ---------------------------------------------------------------------------
 
 on:
@@ -40,10 +36,13 @@ env:
   # Scoped scan target. Kept well under cm's ~10 MB per-scan upload limit and
   # contains the canonical CRITICAL finding (SQL injection in routes/login.ts).
   SCAN_PATH: routes
-  # The `cm` binary is published as a private Release asset on THIS repo
-  # (see lab/INSTRUCTOR.md) and pulled in with the built-in GITHUB_TOKEN.
-  CM_RELEASE_TAG: cm-cli-v0.1.0
-  CM_ASSET: cm-linux
+  # CodeMender CLI version hosted in Google Cloud Artifact Registry.
+  # Note: Artifact Registry uses semantic versioning ('0.3.0', '0.4.0', or the alias 'stable').
+  # (Docs: https://docs.cloud.google.com/gemini-enterprise-agent-platform/codemender/set-up-environment#download-cli)
+  CM_VERSION: "0.3.0"
+  # Target Google Cloud Project for CodeMender / Vertex AI API operations
+  GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID || '' }}
+  CLOUDSDK_CORE_PROJECT: ${{ vars.GCP_PROJECT_ID || secrets.GCP_PROJECT_ID || '' }}
   # How many of the top-ranked HIGH/CRITICAL findings to auto-remediate in one
   # run (all land in a single PR). Set to 1 for a minimal single-fix lab.
   CM_FIX_LIMIT: "3"
@@ -60,13 +59,26 @@ jobs:
         with:
           fetch-depth: 0          # full history so cm can evaluate code context
 
+      - name: Cache CodeMender CLI
+        id: cache-cm
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/cmbin
+          key: codemender-cli-${{ runner.os }}-${{ runner.arch }}-${{ env.CM_VERSION }}
+
       - name: Install CodeMender CLI (cm)
+        if: steps.cache-cm.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/cmbin"
-          echo "Downloading $CM_ASSET from release $CM_RELEASE_TAG ..."
-          curl -L -o "$RUNNER_TEMP/cmbin/cm" \
-            "https://github.com/${{ github.repository }}/releases/download/${{ env.CM_RELEASE_TAG }}/${{ env.CM_ASSET }}"
+          echo "Cache miss: downloading CodeMender CLI ($CM_VERSION) from Google Cloud Artifact Registry..."
+          curl -L -o "$RUNNER_TEMP/cm-linux-amd64.zip" \
+            "https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3A${{ env.CM_VERSION }}%3Acm-linux-amd64.zip:download?alt=media"
+          unzip -q -o "$RUNNER_TEMP/cm-linux-amd64.zip" -d "$RUNNER_TEMP/cmbin"
+          chmod +x "$RUNNER_TEMP/cmbin/cm"
+
+      - name: Configure CodeMender CLI PATH
+        run: |
           chmod +x "$RUNNER_TEMP/cmbin/cm"
           echo "$RUNNER_TEMP/cmbin" >> "$GITHUB_PATH"     # cm on PATH for later steps
           "$RUNNER_TEMP/cmbin/cm" --version || true
