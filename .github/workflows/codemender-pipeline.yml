@@ -99,6 +99,8 @@ jobs:
           mkdir -p "$HOME/.codemender"
           if [ -f "$HOME/.codemender/config.yaml" ]; then
             sed -i 's/type: ""/type: "git"/' "$HOME/.codemender/config.yaml" 2>/dev/null || true
+            sed -i 's/confirm_commands: true/confirm_commands: false/' "$HOME/.codemender/config.yaml" 2>/dev/null || true
+            sed -i 's/confirm_writes: true/confirm_writes: false/' "$HOME/.codemender/config.yaml" 2>/dev/null || true
           fi
           if [ -f "$HOME/.codemender/identity.key" ]; then
             echo "CodeMender identity initialized."
@@ -111,7 +113,7 @@ jobs:
         run: |
           set -uo pipefail
           echo "Scanning '$SCAN_PATH' (source is uploaded to codemender.pa.googleapis.com)..."
-          cm find "$SCAN_PATH" -y 2>&1 | tee "$RUNNER_TEMP/cm-find.cm.log"
+          cm find "$SCAN_PATH" -y --bypass-warning 2>&1 | tee "$RUNNER_TEMP/cm-find.cm.log"
 
       - name: Export Security Report (cm report -f json)
         if: always()
@@ -145,7 +147,7 @@ jobs:
           TARGET_DIR=$( [ -d "$SCAN_PATH" ] && echo "$SCAN_PATH" || dirname "$SCAN_PATH" )
           for FID in ${{ steps.triage.outputs.fix_ids }}; do
             echo "::group::cm fix $FID"
-            cm fix "$FID" -y 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
+            cm fix "$FID" -y --bypass-warning 2>&1 | tee "$RUNNER_TEMP/fix-$FID.cm.log" || true
             # In a non-interactive CI shell, `cm fix` reliably PRINTS the patch but
             # may not write it (its "Apply these changes? [y/N]" prompt reads EOF).
             # Extract the printed diff and apply it ONLY if it applies cleanly — so
